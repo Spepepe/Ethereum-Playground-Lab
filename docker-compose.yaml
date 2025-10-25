@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  backend:
+    build: ./back
+    container_name: ethr-test-back
+    ports:
+      - "33002:3000"
+    volumes:
+      - ./back:/app
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+    networks:
+      - ethr-net
+
+  frontend:
+    build: ./front
+    container_name: ethr-test-front
+    ports:
+      - "33001:3000"
+    volumes:
+      - ./front:/app
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://backend:3000
+    depends_on:
+      - backend
+    networks:
+      - ethr-net
+
+networks:
+  ethr-net:
+    driver: bridge
