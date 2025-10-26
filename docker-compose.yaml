@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   backend:
     build: ./back
@@ -30,6 +28,22 @@ services:
       - backend
     networks:
       - ethr-net
+
+  eip4437:
+    build: ./EIP-4437
+    container_name: ethr-test-eip4437
+    ports:
+      - "38545:8545"
+    volumes:
+      - ./EIP-4437:/app
+      - /app/node_modules
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+    networks:
+      - ethr-net
+    stdin_open: true
+    tty: true
 
 networks:
   ethr-net:

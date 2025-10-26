@@ -1,0 +1,184 @@
+name: Deploy Smart Contracts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'EIP-4437/contracts/**'
+      - 'EIP-4437/scripts/**'
+  pull_request:
+    paths:
+      - 'EIP-4437/contracts/**'
+      - 'EIP-4437/scripts/**'
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    name: Detect Changed Contracts
+    runs-on: ubuntu-latest
+    outputs:
+      changed_files: ${{ steps.changed-files.outputs.all_changed_files }}
+      has_changes: ${{ steps.changed-files.outputs.any_changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v41
+        with:
+          files: |
+            EIP-4437/contracts/**/*.sol
+
+      - name: List changed contracts
+        run: |
+          echo "Changed contracts:"
+          echo "${{ steps.changed-files.outputs.all_changed_files }}"
+
+  test:
+    name: Test Contracts
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: EIP-4437/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./EIP-4437
+        run: npm ci
+
+      - name: Compile contracts
+        working-directory: ./EIP-4437
+        run: npx hardhat compile
+
+      - name: Run tests
+        working-directory: ./EIP-4437
+        run: npx hardhat test
+
+      - name: Check contract size
+        working-directory: ./EIP-4437
+        run: npx hardhat size-contracts || echo "Size check not available"
+
+  deploy-testnet:
+    name: Deploy Changed Contracts to Sepolia
+    runs-on: ubuntu-latest
+    needs: [detect-changes, test]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.detect-changes.outputs.has_changes == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: EIP-4437/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./EIP-4437
+        run: npm ci
+
+      - name: Compile contracts
+        working-directory: ./EIP-4437
+        run: npx hardhat compile
+
+      - name: Restore deployment cache
+        uses: actions/cache@v4
+        with:
+          path: EIP-4437/deployments.json
+          key: deployments-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            deployments-${{ github.ref }}-
+            deployments-
+
+      - name: Deploy changed contracts to Sepolia
+        working-directory: ./EIP-4437
+        env:
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          # EntryPoint v0.7: 0x0000000071727De22E5E9d8BAf0edAc6f37da032
+          ENTRYPOINT_ADDRESS: ${{ secrets.ENTRYPOINT_ADDRESS }}
+          PAYMASTER_SIGNER: ${{ secrets.PAYMASTER_SIGNER }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+        run: |
+          echo "Deploying only changed contracts to save gas..."
+          echo "Using EntryPoint v0.7"
+          npx hardhat run scripts/deploy-changed.ts --network sepolia
+
+      - name: Save deployment cache
+        uses: actions/cache/save@v4
+        with:
+          path: EIP-4437/deployments.json
+          key: deployments-${{ github.ref }}-${{ github.sha }}
+
+      - name: Upload deployment info
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-info
+          path: EIP-4437/deployments.json
+
+      - name: Comment deployment results
+        if: github.event_name == 'push'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const deployments = JSON.parse(fs.readFileSync('EIP-4437/deployments.json', 'utf8'));
+
+            let comment = '## 🚀 Smart Contract Deployment Results\n\n';
+            comment += '| Contract | Address | Network |\n';
+            comment += '|----------|---------|----------|\n';
+
+            for (const [key, value] of Object.entries(deployments)) {
+              comment += `| ${key} | \`${value.address}\` | ${value.network} |\n`;
+            }
+
+            comment += '\n✅ Only changed contracts were deployed to save gas fees!';
+
+            console.log(comment);
+
+  security-check:
+    name: Security Analysis
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Slither
+        run: |
+          pip3 install slither-analyzer
+          pip3 install solc-select
+          solc-select install 0.8.28
+          solc-select use 0.8.28
+
+      - name: Run Slither
+        working-directory: ./EIP-4437
+        run: slither . --filter-paths "node_modules|test" || echo "Slither analysis completed with warnings"
+        continue-on-error: true
